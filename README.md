@@ -1,32 +1,50 @@
-# YDownload — Downloader de músicas e vídeos (yt-dlp + ffmpeg)
+# Clip Downloader
 
-Ferramenta pessoal baseada no [yt-dlp](https://github.com/yt-dlp/yt-dlp) e no [ffmpeg](https://ffmpeg.org/) para baixar e organizar músicas e vídeos automaticamente, com regras fixas de qualidade, formato, nomeação de arquivos e pasta de destino.
+Aplicativo desktop para Windows, feito em **Delphi (VCL)**, que integra um navegador (**Microsoft Edge WebView2**) e usa o [yt-dlp](https://github.com/yt-dlp/yt-dlp) + [ffmpeg](https://ffmpeg.org/) para baixar músicas e vídeos com um clique.
+
+> Desenvolvido com o auxílio do **OPENCODE**.
 
 ## O que faz
 
-- **Músicas (link único):** extrai áudio em **MP3 320 kbps**.
-- **Álbuns/playlists:** baixa em **MP3 V0 (VBR, ~245 kbps)** e organiza em `Artista\Álbum`.
-- **Vídeos:** baixa em **MP4 H.264 Baseline, 1280x720, 30 FPS** com áudio **AAC-LC 128 kbps / 44.1 kHz**, re-encodando com ffmpeg para garantir as especificações exatas (com padding para não distorcer vídeos 4:3).
+- **Navegador embutido:** abre o YouTube (ou qualquer site) dentro do app, com barra de endereço, voltar/avançar/recarregar/início.
+- **Escolha de formato:**
+  - **MP3 (áudio 320 kbps)** para músicas.
+  - **MP4 (vídeo 720p H.264)** com re-encode via ffmpeg.
+- **Barra lateral de downloads** com progresso real (percentual, velocidade e ETA), status por item, cancelamento e botão **Abrir**.
+- **Fila de downloads** com execução em threads, sem travar a interface e com cancelamento seguro.
+- **Filtro de codec:** o download de vídeo só prossegue se houver H.264 até 720p disponível.
+- **Organização automática de nomes** (remove numeração, `(Official Video)`, `|` full-width etc.).
 
-## Padrões seguidos
+## Especificações de saída
 
-- Nome do arquivo sempre `Artista - Música.ext`, sem numeração e sem lixo de título (`(Official Video)`, sufixos de álbum, barra vertical full-width `|` U+FF5C, etc.).
-- Participações (`feat.` / `ft.`) são mantidas.
-- Destino padrão configurável por pasta.
+- **Áudio:** MP3 CBR 320 kbps.
+- **Vídeo:** MP4, H.264 Baseline, 1280x720, 30 FPS, ~1 Mbps; áudio AAC-LC 128 kbps / 44.1 kHz.
 
-## Estrutura
+## Requisitos
 
-- `yt-dlp.exe` — baixador.
-- `ffmpeg.exe` — pós-processamento (conversão MP3 / re-encode MP4).
-- `AGENTS.md` — as convenções e os comandos usados.
+- **Delphi / RAD Studio** (VCL) para compilar o projeto.
+- **Microsoft Edge WebView2 Runtime** instalado e o `WebView2Loader.dll` ao lado do executável.
+- **`yt-dlp.exe`** e **`ffmpeg.exe`** disponíveis para o app usar.
 
-## Como usar
+## Estrutura do projeto
 
-Basta rodar o `yt-dlp.exe` com as flags documentadas no `AGENTS.md`. Exemplo (música avulsa em MP3 320 kbps):
-
-```powershell
-.\yt-dlp.exe --extract-audio --audio-format mp3 --audio-quality 320K -o "M:\Clips\%(title)s.%(ext)s" "URL"
 ```
+system/
+  ClipDownloader.dpr        # projeto Delphi
+  ClipDownloader.dproj
+  src/
+    uMain.pas               # interface (navegador + barra lateral de downloads)
+    uDownloader.pas         # gerenciador de downloads (fila + threads)
+    uProcessRunner.pas      # execução de processos externos sem deadlock
+  WebView2Loader.dll
+```
+
+## Como compilar e usar
+
+1. Abra `system\ClipDownloader.dproj` no Delphi/RAD Studio e compile.
+2. Garanta que `yt-dlp.exe` e `ffmpeg.exe` estejam no diretório configurado em `uDownloader.pas` (constante `YTDLP_DIR`).
+3. Ajuste a pasta de destino na constante `DEST_DIR` (ex: `M:\Clips`).
+4. Execute, abra um vídeo e clique em **Baixar**.
 
 ## Aviso
 
