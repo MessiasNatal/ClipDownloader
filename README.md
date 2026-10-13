@@ -9,16 +9,20 @@ Aplicativo desktop para Windows, feito em **Delphi (VCL)**, que integra um naveg
 - **Navegador embutido:** abre o YouTube (ou qualquer site) dentro do app, com barra de endereço, voltar/avançar/recarregar/início.
 - **Escolha de formato:**
   - **MP3 (áudio 320 kbps)** para músicas.
-  - **MP4 (vídeo 720p H.264)** com re-encode via ffmpeg.
+  - **MP4 720p** (padrão) ou **MP4 1080p**, com re-encode via ffmpeg.
+- **Escolha de codec de vídeo** (só para MP4): **H.264 (padrão)**, H.265 (HEVC), VP9 (WebM), AV1 e MPEG-4.
+- **Escolha da pasta de destino** pelo botão **Destino…** (salva no INI).
+- **Botão Restaurar:** volta os tipos aos padrões originais (MP4 720p + H.264).
 - **Barra lateral de downloads** com progresso real (percentual, velocidade e ETA), status por item, cancelamento e botão **Abrir**.
 - **Fila de downloads** com execução em threads, sem travar a interface e com cancelamento seguro.
-- **Filtro de codec:** o download de vídeo só prossegue se houver H.264 até 720p disponível.
+- **Verificação de disponibilidade:** o download de vídeo só prossegue se houver vídeo até a altura escolhida.
 - **Organização automática de nomes** (remove numeração, `(Official Video)`, `|` full-width etc.).
 
 ## Especificações de saída
 
 - **Áudio:** MP3 CBR 320 kbps.
-- **Vídeo:** MP4, H.264 Baseline, 1280x720, 30 FPS, ~1 Mbps; áudio AAC-LC 128 kbps / 44.1 kHz.
+- **Vídeo (H.264, padrão):** MP4, H.264 Baseline, 1280x720 (ou 1920x1080), 30 FPS, ~1 Mbps; áudio AAC-LC 128 kbps / 44.1 kHz.
+- **Vídeo (outros codecs):** H.265 → MP4 (libx265); AV1 → MP4 (libaom-av1); MPEG-4 → MP4; VP9 → **WebM** (libvpx-vp9 + Opus).
 
 ## Requisitos
 
@@ -32,8 +36,10 @@ Aplicativo desktop para Windows, feito em **Delphi (VCL)**, que integra um naveg
 system/
   ClipDownloader.dpr        # projeto Delphi
   ClipDownloader.dproj
+  ClipDownloader.ini        # configurações (criado na 1ª execução)
   src/
     uMain.pas               # interface (navegador + barra lateral de downloads)
+    uConfig.pas             # leitura/gravação do INI (destino, resolução, codec)
     uDownloader.pas         # gerenciador de downloads (fila + threads)
     uProcessRunner.pas      # execução de processos externos sem deadlock
   WebView2Loader.dll
@@ -50,13 +56,24 @@ system/
 O aplicativo não usa caminhos absolutos de máquina. Ao iniciar, ele resolve:
 
 - **yt-dlp/ffmpeg:** procura `yt-dlp.exe` na pasta do executável, depois em `..\` e em `bin\`.
-- **Pasta de destino:** usa a variável de ambiente `CLIPDOWNLOADER_DEST` se definida; caso contrário, `<usuário>\Downloads\Clips`.
+- **Pasta de destino:** lê do INI; na primeira execução usa `CLIPDOWNLOADER_DEST` (se definida) ou `<usuário>\Downloads\Clips`.
 
-Para mudar a pasta de destino sem recompilar, defina antes de abrir o app:
+### Configuração (ClipDownloader.ini)
 
-```powershell
-setx CLIPDOWNLOADER_DEST "D:\Music\Clips"
+Criado ao lado do executável na primeira execução e atualizado quando você muda
+as opções na interface:
+
+```ini
+[Download]
+SavePath=D:\Music\Clips
+
+[Video]
+Resolution=720          ; 720 | 1080
+Codec=h264              ; h264 | h265 | vp9 | av1 | mpeg4
 ```
+
+- **Pasta de destino:** mude pelo botão **Destino…** (ou edite `SavePath` e reabra o app).
+- **Resolução e codec:** mude pelos combos na barra de ferramentas; são gravados automaticamente.
 
 ## Aviso
 

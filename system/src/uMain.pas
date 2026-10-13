@@ -25,9 +25,11 @@ uses
   Vcl.ComCtrls,
   Vcl.Graphics,
   Vcl.Dialogs,
+  Vcl.FileCtrl,
   Vcl.Edge,
   Winapi.EdgeUtils,
   Winapi.WebView2,
+  uConfig,
   uDownloader;
 
 type
@@ -75,7 +77,10 @@ type
     FBtnHome: TButton;
     FEdAddress: TEdit;
     FCbFormat: TComboBox;
+    FCbCodec: TComboBox;
     FBtnDownload: TButton;
+    FBtnDestino: TButton;
+    FBtnRestore: TButton;
     FBtnFolder: TButton;
     FLoadingBar: TProgressBar;
     FHost: TPanel;
@@ -105,7 +110,11 @@ type
     procedure BtnReloadClick(Sender: TObject);
     procedure BtnHomeClick(Sender: TObject);
     procedure BtnDownloadClick(Sender: TObject);
+    procedure BtnDestinoClick(Sender: TObject);
+    procedure BtnRestoreClick(Sender: TObject);
     procedure BtnFolderClick(Sender: TObject);
+    procedure FormatChanged(Sender: TObject);
+    procedure SaveUiConfig;
     procedure EdAddressKeyDown(Sender: TObject; var Key: Word; Shift: TShiftState);
 
     procedure EdgeCreateWebViewCompleted(Sender: TCustomEdgeBrowser; AResult: HResult);
@@ -441,6 +450,10 @@ begin
 end;
 
 procedure TFrmMain.BuildToolbar;
+var
+  CodecArr: TArray<TVideoCodec>;
+  Cd: TVideoCodec;
+  I: Integer;
 begin
   FBtnBack := TButton.Create(FToolbar);
   FBtnBack.Parent := FToolbar;
@@ -479,33 +492,71 @@ begin
 
   FCbFormat := TComboBox.Create(FToolbar);
   FCbFormat.Parent := FToolbar;
-  FCbFormat.SetBounds(738, 12, 170, 26);
+  FCbFormat.SetBounds(600, 12, 150, 26);
   FCbFormat.Style := csDropDownList;
   FCbFormat.Items.Add('MP3 (áudio 320 kbps)');
-  FCbFormat.Items.Add('MP4 (vídeo 720p)');
-  FCbFormat.ItemIndex := 0;
+  FCbFormat.Items.Add('MP4 720p');
+  FCbFormat.Items.Add('MP4 1080p');
+
+  FCbCodec := TComboBox.Create(FToolbar);
+  FCbCodec.Parent := FToolbar;
+  FCbCodec.SetBounds(756, 12, 140, 26);
+  FCbCodec.Style := csDropDownList;
+  CodecArr := CodecList;
+  for Cd in CodecArr do
+    FCbCodec.Items.Add(CodecName(Cd));
+
+  { Seleciona os valores atuais do INI e só então liga o evento (para não
+    gravar durante a montagem da interface). }
+  if AppConfig.VideoHeight = 1080 then
+    FCbFormat.ItemIndex := 2
+  else
+    FCbFormat.ItemIndex := 1;
+  FCbCodec.ItemIndex := 0;
+  for I := 0 to High(CodecArr) do
+    if CodecArr[I] = AppConfig.Codec then
+      FCbCodec.ItemIndex := I;
+  FCbFormat.OnChange := FormatChanged;
+  FCbCodec.OnChange := FormatChanged;
+  FCbCodec.Enabled := FCbFormat.ItemIndex <> 0;
+
+  FBtnRestore := TButton.Create(FToolbar);
+  FBtnRestore.Parent := FToolbar;
+  FBtnRestore.SetBounds(856, 11, 104, 28);
+  FBtnRestore.Caption := 'Restaurar';
+  FBtnRestore.OnClick := BtnRestoreClick;
 
   FBtnDownload := TButton.Create(FToolbar);
   FBtnDownload.Parent := FToolbar;
-  FBtnDownload.SetBounds(916, 11, 120, 28);
+  FBtnDownload.SetBounds(906, 11, 110, 28);
   FBtnDownload.Caption := 'Baixar';
   FBtnDownload.Font.Style := [fsBold];
   FBtnDownload.OnClick := BtnDownloadClick;
 
+  FBtnDestino := TButton.Create(FToolbar);
+  FBtnDestino.Parent := FToolbar;
+  FBtnDestino.SetBounds(1022, 11, 100, 28);
+  FBtnDestino.Caption := 'Destino…';
+  FBtnDestino.OnClick := BtnDestinoClick;
+
   FBtnFolder := TButton.Create(FToolbar);
   FBtnFolder.Parent := FToolbar;
-  FBtnFolder.SetBounds(1042, 11, 110, 28);
+  FBtnFolder.SetBounds(1128, 11, 90, 28);
   FBtnFolder.Caption := 'Pasta';
   FBtnFolder.OnClick := BtnFolderClick;
 
   FToolbar.OnResize := ToolbarResize;
+  ToolbarResize(FToolbar);
 end;
 
 procedure TFrmMain.ToolbarResize(Sender: TObject);
 begin
-  FBtnFolder.Left := FToolbar.ClientWidth - 118;
-  FBtnDownload.Left := FBtnFolder.Left - 128;
-  FCbFormat.Left := FBtnDownload.Left - 178;
+  FBtnFolder.Left := FToolbar.ClientWidth - 98;
+  FBtnDestino.Left := FBtnFolder.Left - 108;
+  FBtnDownload.Left := FBtnDestino.Left - 118;
+  FBtnRestore.Left := FBtnDownload.Left - 112;
+  FCbCodec.Left := FBtnRestore.Left - 148;
+  FCbFormat.Left := FCbCodec.Left - 158;
   FEdAddress.Width := FCbFormat.Left - FEdAddress.Left - 8;
   if FEdAddress.Width < 120 then
     FEdAddress.Width := 120;
@@ -593,8 +644,56 @@ end;
 
 procedure TFrmMain.BtnFolderClick(Sender: TObject);
 begin
-  ForceDirectories(DEST_DIR);
+  System.SysUtils.ForceDirectories(DEST_DIR);
   ShellExecute(Handle, 'open', PChar(DEST_DIR), nil, nil, SW_SHOWNORMAL);
+end;
+
+procedure TFrmMain.BtnDestinoClick(Sender: TObject);
+var
+  Dir: string;
+begin
+  Dir := AppConfig.SavePath;
+  if SelectDirectory('Escolha a pasta de destino', '', Dir, [sdNewUI], Self) then
+  begin
+    SetDestination(Dir);
+    AppConfig.SavePath := DEST_DIR;
+    AppConfig.Save;
+    FStatusBar.SimpleText := 'Pasta de destino: ' + DEST_DIR;
+  end;
+end;
+
+procedure TFrmMain.BtnRestoreClick(Sender: TObject);
+begin
+  { Volta os tipos aos padrões de antes (que eram fixos): MP4 720p + H.264. }
+  FCbFormat.ItemIndex := 1;
+  FCbCodec.ItemIndex := 0;
+  FCbCodec.Enabled := True;
+  SaveUiConfig;
+  FStatusBar.SimpleText := 'Padrões restaurados: MP4 720p / H.264';
+end;
+
+procedure TFrmMain.SaveUiConfig;
+var
+  C: TArray<TVideoCodec>;
+begin
+  if FCbFormat.ItemIndex = 2 then
+    AppConfig.VideoHeight := 1080
+  else
+    AppConfig.VideoHeight := 720;
+
+  if FCbCodec.ItemIndex >= 0 then
+  begin
+    C := CodecList;
+    if FCbCodec.ItemIndex <= High(C) then
+      AppConfig.Codec := C[FCbCodec.ItemIndex];
+  end;
+  AppConfig.Save;
+end;
+
+procedure TFrmMain.FormatChanged(Sender: TObject);
+begin
+  FCbCodec.Enabled := FCbFormat.ItemIndex <> 0;
+  SaveUiConfig;
 end;
 
 procedure TFrmMain.EdgeCreateWebViewCompleted(Sender: TCustomEdgeBrowser;
@@ -684,7 +783,7 @@ begin
     ShowMessage('yt-dlp.exe não encontrado em:' + sLineBreak + YTDLP_EXE);
     Exit;
   end;
-  if (FCbFormat.ItemIndex = 1) and (not FileExists(FFMPEG_EXE)) then
+  if (FCbFormat.ItemIndex <> 0) and (not FileExists(FFMPEG_EXE)) then
   begin
     ShowMessage('ffmpeg.exe não encontrado em:' + sLineBreak + FFMPEG_EXE);
     Exit;
@@ -713,10 +812,12 @@ begin
     Exit;
   end;
 
-  if FCbFormat.ItemIndex = 1 then
+  if FCbFormat.ItemIndex <> 0 then
     Kind := dkMp4
   else
     Kind := dkMp3;
+
+  SaveUiConfig;
 
   if not FManager.Enqueue(Url, Kind, Task, Duplicate) then
   begin

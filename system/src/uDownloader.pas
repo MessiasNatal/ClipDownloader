@@ -28,6 +28,7 @@ uses
   System.IOUtils,
   System.RegularExpressions,
   System.SyncObjs,
+  uConfig,
   uProcessRunner;
 
 const
@@ -37,20 +38,6 @@ const
     'download:[dlprog]%(progress.downloaded_bytes)s;' +
     '%(progress.total_bytes)s;%(progress.speed)s;' +
     '%(progress.eta)s;%(progress._percent_str)s';
-
-var
-  { Caminhos resolvidos em tempo de execução (ver seção "initialization" no
-    fim desta unit):
-    - YTDLP_DIR: pasta onde ficam yt-dlp.exe e ffmpeg.exe. É procurada a partir
-      da pasta do executável (mesma pasta, ..\ ou .\bin\), então NÃO existe
-      caminho absoluto fixo de máquina.
-    - DEST_DIR: pasta de destino dos downloads. Pode ser sobreposta pela
-      variável de ambiente CLIPDOWNLOADER_DEST; por padrão, <usuário>\Downloads\Clips. }
-  YTDLP_DIR: string;
-  YTDLP_EXE: string;
-  FFMPEG_EXE: string;
-  DEST_DIR: string;
-  TEMP_DIR: string;
 
 type
   TDownloadKind = (dkMp3, dkMp4);
@@ -71,6 +58,8 @@ type
     Id: Integer;
     Url: string;
     Kind: TDownloadKind;
+    VideoHeight: Integer;  // resolução alvo (720/1080) — só dkMp4
+    Codec: TVideoCodec;    // codec de saída do vídeo — só dkMp4
     Title: string;       // título obtido do yt-dlp
     Name: string;        // nome final do arquivo (sem extensão)
     FileName: string;    // caminho final quando concluído
@@ -122,19 +111,23 @@ type
 
     { Parâmetros de linha de comando do yt-dlp (configurações preservadas). }
     class function AudioParams(const ARemoteUrl, ASourceTemplate: string): string; static;
-    class function VideoParams(const ARemoteUrl, ASourceTemplate: string): string; static;
-    class function FfmpegParams(const ASourceFile, AEncodedFile: string): string; static;
+    class function VideoParams(const ARemoteUrl, ASourceTemplate: string;
+      AHeight: Integer): string; static;
+    class function FfmpegParams(const ASourceFile, AEncodedFile: string;
+      AHeight: Integer; ACodec: TVideoCodec): string; static;
     class function TitleParams(const ARemoteUrl, AOutFile: string): string; static;
-    class function SimulateH264Params(const ARemoteUrl: string): string; static;
+    class function SimulateVideoParams(const ARemoteUrl: string;
+      AHeight: Integer): string; static;
 
     { Obtém o título real do vídeo consultando o yt-dlp (lê o arquivo gerado
       com --print-to-file). Retorna vazio em caso de falha ou cancelamento. }
     function ResolveTitle(const ATaskId: Integer; const ARemoteUrl,
       ATempId: string): string;
 
-    { Verifica se a URL oferece vídeo H.264 até 720p (consulta via --simulate).
-      Sem H.264 o download de vídeo é abortado, conforme especificação. }
-    function HasH264(const ATaskId: Integer; const ARemoteUrl: string): Boolean;
+    { Verifica se a URL oferece vídeo até a altura pedida (consulta via
+      --simulate). Sem vídeo disponível o download é abortado. }
+    function HasVideo(const ATaskId: Integer; const ARemoteUrl: string;
+      AHeight: Integer): Boolean;
 
     { Move um arquivo para o destino final, sobrescrevendo se necessário. }
     class function MoveFileOverwrite(const ASource, ADest: string): Boolean; static;
@@ -174,6 +167,24 @@ type
     procedure CleanTempFiles(const APrefix: string);
   end;
 
+var
+  { Caminhos resolvidos em tempo de execução (ver seção "initialization" no
+    fim desta unit):
+    - YTDLP_DIR: pasta onde ficam yt-dlp.exe e ffmpeg.exe. É procurada a partir
+      da pasta do executável (mesma pasta, ..\ ou .\bin\), então NÃO existe
+      caminho absoluto fixo de máquina.
+    - DEST_DIR: pasta de destino dos downloads. Vem do INI (ClipDownloader.ini),
+      que por padrão usa <usuário>\Downloads\Clips. }
+  YTDLP_DIR: string;
+  YTDLP_EXE: string;
+  FFMPEG_EXE: string;
+  DEST_DIR: string;
+  TEMP_DIR: string;
+
+{ Atualiza a pasta de destino (DEST_DIR/TEMP_DIR) em tempo de execução e garante
+  que existam. Usado quando o usuário troca a pasta pelo botão "Destino...". }
+procedure SetDestination(const APath: string);
+
 implementation
 
 uses
@@ -201,6 +212,37 @@ type
   end;
 
 { ---------- Utilities ---------- }
+
+{ Extensão do arquivo final por codec: VP9 sai em WebM; os demais em MP4. }
+function CodecExt(ACodec: TVideoCodec): string;
+begin
+  if ACodec = vcVp9 then
+    Result := '.webm'
+  else
+    Result := '.mp4';
+end;
+
+{ Localiza o arquivo baixado (fonte) pelo prefixo, independentemente da
+  extensão/container que o yt-dlp escolher ao mesclar. }
+function FindSourceFile(const APrefix: string): string;
+var
+  Files: TArray<string>;
+  F: string;
+begin
+  Result := '';
+  try
+    Files := TDirectory.GetFiles(TEMP_DIR, APrefix + '.*');
+  except
+    Exit;
+  end;
+  for F in Files do
+    if not SameText(ExtractFileExt(F), '.part') and
+      not SameText(ExtractFileExt(F), '.ytdl') then
+    begin
+      Result := F;
+      Exit;
+    end;
+end;
 
 function NormalizeNumber(const S: string): string;
 begin
@@ -458,12 +500,13 @@ end;
 function TDownloadWorker.DownloadVideoClip(const ATempId: string;
   out AFinalFile: string): TExecuteResult;
 var
-  FinalPath, SourceTemplate, EncodedFile, SourceFile: string;
+  FinalPath, SourceTemplate, EncodedFile, SourceFile, Ext: string;
   ExitCode: Cardinal;
   Res: TExecuteResult;
 begin
   AFinalFile := '';
-  FinalPath := TPath.Combine(DEST_DIR, FTask.Name + '.mp4');
+  Ext := CodecExt(FTask.Codec);
+  FinalPath := TPath.Combine(DEST_DIR, FTask.Name + Ext);
   if FileExists(FinalPath) then
   begin
     AFinalFile := FinalPath;
@@ -473,27 +516,28 @@ begin
   SourceTemplate := TPath.Combine(TEMP_DIR, FTask.Name + '_' + ATempId +
     '_source') + '.%(ext)s';
   EncodedFile := TPath.Combine(TEMP_DIR, FTask.Name + '_' + ATempId +
-    '_encoded.mp4');
+    '_encoded' + Ext);
 
   Res := FManager.Execute(FTask.Id, YTDLP_EXE,
-    TDownloadManager.VideoParams(FTask.Url, SourceTemplate), YTDLP_DIR,
-    HandleProcessLine, ExitCode);
+    TDownloadManager.VideoParams(FTask.Url, SourceTemplate, FTask.VideoHeight),
+    YTDLP_DIR, HandleProcessLine, ExitCode);
   if Res <> erOk then
     Exit(Res);
 
-  SourceFile := ChangeFileExt(SourceTemplate, '.mp4');
-  if not FileExists(SourceFile) then
+  SourceFile := FindSourceFile(TPath.Combine(TEMP_DIR,
+    FTask.Name + '_' + ATempId + '_source'));
+  if SourceFile = '' then
     Exit(erFailed);
 
-  { Re-encode final para H.264 Baseline 720p, AAC-LC 128 kbps (configuração
-    preservada). }
+  { Re-encode final na resolução e codec escolhidos (H.264: Baseline 720p,
+    AAC-LC 128 kbps — configuração original preservada). }
   FTask.Progress.Phase := 'Convertendo vídeo…';
   FTask.Progress.Percent := 100;
   PublishSnapshot;
 
   Res := FManager.Execute(FTask.Id, FFMPEG_EXE,
-    TDownloadManager.FfmpegParams(SourceFile, EncodedFile), YTDLP_DIR,
-    nil, ExitCode);
+    TDownloadManager.FfmpegParams(SourceFile, EncodedFile, FTask.VideoHeight,
+    FTask.Codec), YTDLP_DIR, nil, ExitCode);
   if Res <> erOk then
   begin
     DeleteFile(SourceFile);
@@ -575,7 +619,7 @@ begin
 
   if FTask.Kind = dkMp4 then
   begin
-    FTask.Progress.Phase := 'Verificando H.264…';
+    FTask.Progress.Phase := 'Verificando vídeo…';
     FTask.Progress.Percent := -1;
     PublishSnapshot;
     if Canceled then
@@ -583,9 +627,9 @@ begin
       PublishCanceled;
       Exit;
     end;
-    if not FManager.HasH264(FTask.Id, FTask.Url) then
+    if not FManager.HasVideo(FTask.Id, FTask.Url, FTask.VideoHeight) then
     begin
-      FailWith('Vídeo sem H.264 até 720p disponível.');
+      FailWith('Nenhum vídeo até ' + HeightName(FTask.VideoHeight) + ' disponível.');
       Exit;
     end;
     if Canceled then
@@ -728,28 +772,64 @@ begin
 end;
 
 class function TDownloadManager.VideoParams(const ARemoteUrl,
-  ASourceTemplate: string): string;
+  ASourceTemplate: string; AHeight: Integer): string;
+var
+  H: string;
 begin
+  H := IntToStr(AHeight);
+  { A saída final é sempre re-encodada no codec/resolução escolhidos, então a
+    origem apenas precisa ter o melhor vídeo até a altura pedida. }
   Result :=
     '--no-warnings ' +
-    '-f "bv*[vcodec^=avc1][height=720][fps<=30]+ba[acodec^=mp4a]/' +
-    'bv*[vcodec^=avc1][height<=720]+ba[acodec^=mp4a]/' +
-    'b[height<=720]" ' +
-    '--merge-output-format mp4 ' +
+    '-f "bv*[height<=' + H + ']+ba/bv*[height<=' + H + ']/b[height<=' + H + ']" ' +
+    '--merge-output-format mkv ' +
     '--newline --progress --progress-template "' + YTDLP_PROGRESS_TEMPLATE + '" ' +
     '--no-overwrites -o "' + ASourceTemplate + '" "' + ARemoteUrl + '"';
 end;
 
 class function TDownloadManager.FfmpegParams(const ASourceFile,
-  AEncodedFile: string): string;
+  AEncodedFile: string; AHeight: Integer; ACodec: TVideoCodec): string;
+var
+  W, H, VEnc, AEnc, MovFlags: string;
 begin
+  if AHeight = 1080 then
+  begin
+    W := '1920';
+    H := '1080';
+  end
+  else
+  begin
+    W := '1280';
+    H := '720';
+  end;
+
+  case ACodec of
+    vcH265: VEnc := '-c:v libx265 -preset medium -crf 24';
+    vcVp9: VEnc := '-c:v libvpx-vp9 -crf 32 -b:v 0 -row-mt 1';
+    vcAv1: VEnc := '-c:v libaom-av1 -crf 32 -b:v 0 -cpu-used 6';
+    vcMpeg4: VEnc := '-c:v mpeg4 -q:v 5';
+  else
+    VEnc := '-c:v libx264 -profile:v baseline -level 3.1 -b:v 1M';
+  end;
+
+  if ACodec = vcVp9 then
+  begin
+    AEnc := '-c:a libopus -b:a 128k -ar 48000 -ac 2';
+    MovFlags := '';
+  end
+  else
+  begin
+    AEnc := '-c:a aac -b:a 128k -ar 44100 -ac 2';
+    MovFlags := '-movflags +faststart ';
+  end;
+
   Result :=
     '-y -i "' + ASourceFile + '" ' +
-    '-c:v libx264 -profile:v baseline -level 3.1 ' +
-    '-vf "scale=1280:720:force_original_aspect_ratio=decrease,' +
-    'pad=1280:720:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" ' +
-    '-b:v 1M -c:a aac -b:a 128k -ar 44100 -ac 2 ' +
-    '-movflags +faststart -strict experimental "' + AEncodedFile + '"';
+    VEnc + ' ' +
+    '-vf "scale=' + W + ':' + H + ':force_original_aspect_ratio=decrease,' +
+    'pad=' + W + ':' + H + ':(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30" ' +
+    AEnc + ' ' +
+    MovFlags + '-strict experimental "' + AEncodedFile + '"';
 end;
 
 class function TDownloadManager.TitleParams(const ARemoteUrl,
@@ -760,11 +840,15 @@ begin
     '" --skip-download --no-warnings "' + ARemoteUrl + '"';
 end;
 
-class function TDownloadManager.SimulateH264Params(const ARemoteUrl: string): string;
+class function TDownloadManager.SimulateVideoParams(const ARemoteUrl: string;
+  AHeight: Integer): string;
+var
+  H: string;
 begin
+  H := IntToStr(AHeight);
   Result :=
     '--simulate --skip-download --no-warnings ' +
-    '-f "bv*[vcodec^=avc1][height<=720]" "' + ARemoteUrl + '"';
+    '-f "bv*[height<=' + H + ']/b[height<=' + H + ']" "' + ARemoteUrl + '"';
 end;
 
 class function TDownloadManager.MoveFileOverwrite(const ASource,
@@ -869,6 +953,8 @@ begin
     T.Id := FNextId;
     T.Url := Norm;
     T.Kind := AKind;
+    T.VideoHeight := AppConfig.VideoHeight;
+    T.Codec := AppConfig.Codec;
     T.Status := dsQueued;
     T.Progress.Status := dsQueued;
     T.Progress.Percent := 0;
@@ -1057,12 +1143,12 @@ begin
   end;
 end;
 
-function TDownloadManager.HasH264(const ATaskId: Integer;
-  const ARemoteUrl: string): Boolean;
+function TDownloadManager.HasVideo(const ATaskId: Integer;
+  const ARemoteUrl: string; AHeight: Integer): Boolean;
 var
   ExitCode: Cardinal;
 begin
-  Result := Execute(ATaskId, YTDLP_EXE, SimulateH264Params(ARemoteUrl),
+  Result := Execute(ATaskId, YTDLP_EXE, SimulateVideoParams(ARemoteUrl, AHeight),
     YTDLP_DIR, nil, ExitCode) = erOk;
 end;
 
@@ -1167,29 +1253,20 @@ begin
   Result := Parent;
 end;
 
-{ Pasta de destino dos downloads. Permite sobreposição por
-  CLIPDOWNLOADER_DEST; caso contrário usa <usuario>\Downloads\Clips, que é
-  gravável em qualquer máquina. }
-function ResolveDestDir: string;
-var
-  Env: string;
+procedure SetDestination(const APath: string);
 begin
-  Env := Trim(GetEnvironmentVariable('CLIPDOWNLOADER_DEST'));
-  if Env <> '' then
-    Exit(NormalizeDir(Env));
-
-  Env := Trim(GetEnvironmentVariable('USERPROFILE'));
-  if Env <> '' then
-    Exit(TPath.Combine(TPath.Combine(Env, 'Downloads'), 'Clips'));
-
-  Result := TPath.Combine(NormalizeDir(ExtractFilePath(ParamStr(0))), 'downloads');
+  if Trim(APath) = '' then
+    Exit;
+  DEST_DIR := NormalizeDir(APath);
+  TEMP_DIR := TPath.Combine(DEST_DIR, '_temp');
+  ForceDirectories(DEST_DIR);
+  ForceDirectories(TEMP_DIR);
 end;
 
 initialization
   YTDLP_DIR := ResolveToolsDir;
   YTDLP_EXE := TPath.Combine(YTDLP_DIR, 'yt-dlp.exe');
   FFMPEG_EXE := TPath.Combine(YTDLP_DIR, 'ffmpeg.exe');
-  DEST_DIR := ResolveDestDir;
-  TEMP_DIR := TPath.Combine(DEST_DIR, '_temp');
+  SetDestination(AppConfig.SavePath);
 
 end.

@@ -7,3 +7,5 @@ system/ClipDownloader.res
 system/src/uDownloader.dcu
 system/src/uMain.dcu
 system/src/uProcessRunner.dcu
+system/src/uConfig.dcu
+system/.radia/debug/timeline.jsonl

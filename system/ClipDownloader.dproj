@@ -123,6 +123,7 @@
         <DelphiCompile Include="$(MainSource)">
             <MainSource>MainSource</MainSource>
         </DelphiCompile>
+        <DCCReference Include="src\uConfig.pas"/>
         <DCCReference Include="src\uProcessRunner.pas"/>
         <DCCReference Include="src\uDownloader.pas"/>
         <DCCReference Include="src\uMain.pas"/>
