@@ -11,8 +11,12 @@
     --progress-template) publicada como eventos consumidos pela thread principal.
   - Cancelamento por tarefa (encerra o processo externo e sinaliza a thread).
 
-  As configurações do yt-dlp (formato, destino M:\Clips, MP3 CBR 320 kbps para
-  música avulsa e pipeline H.264 720p Baseline + AAC para vídeo) são preservadas. }
+  As configurações do yt-dlp (formato, MP3 CBR 320 kbps para música avulsa e
+  pipeline H.264 720p Baseline + AAC para vídeo) são preservadas.
+
+  Os caminhos (yt-dlp/ffmpeg e pasta de destino) são resolvidos em tempo de
+  execução a partir da pasta do próprio executável, para funcionar em qualquer
+  máquina sem depender de caminhos absolutos do desenvolvedor. }
 
 interface
 
@@ -27,18 +31,26 @@ uses
   uProcessRunner;
 
 const
-  YTDLP_DIR = 'P:\Arquivos de Programas\yt-dlp';
-  YTDLP_EXE = YTDLP_DIR + '\yt-dlp.exe';
-  FFMPEG_EXE = YTDLP_DIR + '\ffmpeg.exe';
-  DEST_DIR = 'M:\Clips';
-  TEMP_DIR = DEST_DIR + '\_temp';
-
   { Template de progresso do yt-dlp (uma linha por atualização, fácil de
     interpretar). Campos: baixado;total;velocidade(byte/s);eta(segundos);%. }
   YTDLP_PROGRESS_TEMPLATE =
     'download:[dlprog]%(progress.downloaded_bytes)s;' +
     '%(progress.total_bytes)s;%(progress.speed)s;' +
     '%(progress.eta)s;%(progress._percent_str)s';
+
+var
+  { Caminhos resolvidos em tempo de execução (ver seção "initialization" no
+    fim desta unit):
+    - YTDLP_DIR: pasta onde ficam yt-dlp.exe e ffmpeg.exe. É procurada a partir
+      da pasta do executável (mesma pasta, ..\ ou .\bin\), então NÃO existe
+      caminho absoluto fixo de máquina.
+    - DEST_DIR: pasta de destino dos downloads. Pode ser sobreposta pela
+      variável de ambiente CLIPDOWNLOADER_DEST; por padrão, <usuário>\Downloads\Clips. }
+  YTDLP_DIR: string;
+  YTDLP_EXE: string;
+  FFMPEG_EXE: string;
+  DEST_DIR: string;
+  TEMP_DIR: string;
 
 type
   TDownloadKind = (dkMp3, dkMp4);
@@ -1118,5 +1130,66 @@ procedure TDownloadManager.StopAll;
 begin
   CancelAll;
 end;
+
+{ ---------- Resolução de caminhos (portável) ---------- }
+
+{ Normaliza um diretório: caminho absoluto e sem barra final (a barra é
+  preservada em raízes como "C:\"). }
+function NormalizeDir(const ADir: string): string;
+begin
+  Result := TPath.GetFullPath(ADir);
+  if (Length(Result) > 3) and (Result[Length(Result)] = PathDelim) then
+    Result := Copy(Result, 1, Length(Result) - 1);
+end;
+
+function HasTool(const ADir, AFile: string): Boolean;
+begin
+  Result := FileExists(TPath.Combine(ADir, AFile));
+end;
+
+{ Procura a pasta com yt-dlp.exe/ffmpeg.exe a partir da pasta do executável,
+  eliminando a dependência de caminhos absolutos do desenvolvedor.
+  Ordem: pasta do exe -> pasta pai (..\) -> subpasta bin\ -> pasta pai. }
+function ResolveToolsDir: string;
+var
+  Base, Parent, Bin: string;
+begin
+  Base := NormalizeDir(ExtractFilePath(ParamStr(0)));
+  Parent := NormalizeDir(TPath.Combine(Base, '..'));
+  Bin := NormalizeDir(TPath.Combine(Base, 'bin'));
+
+  if HasTool(Base, 'yt-dlp.exe') then
+    Exit(Base);
+  if HasTool(Parent, 'yt-dlp.exe') then
+    Exit(Parent);
+  if HasTool(Bin, 'yt-dlp.exe') then
+    Exit(Bin);
+  Result := Parent;
+end;
+
+{ Pasta de destino dos downloads. Permite sobreposição por
+  CLIPDOWNLOADER_DEST; caso contrário usa <usuario>\Downloads\Clips, que é
+  gravável em qualquer máquina. }
+function ResolveDestDir: string;
+var
+  Env: string;
+begin
+  Env := Trim(GetEnvironmentVariable('CLIPDOWNLOADER_DEST'));
+  if Env <> '' then
+    Exit(NormalizeDir(Env));
+
+  Env := Trim(GetEnvironmentVariable('USERPROFILE'));
+  if Env <> '' then
+    Exit(TPath.Combine(TPath.Combine(Env, 'Downloads'), 'Clips'));
+
+  Result := TPath.Combine(NormalizeDir(ExtractFilePath(ParamStr(0))), 'downloads');
+end;
+
+initialization
+  YTDLP_DIR := ResolveToolsDir;
+  YTDLP_EXE := TPath.Combine(YTDLP_DIR, 'yt-dlp.exe');
+  FFMPEG_EXE := TPath.Combine(YTDLP_DIR, 'ffmpeg.exe');
+  DEST_DIR := ResolveDestDir;
+  TEMP_DIR := TPath.Combine(DEST_DIR, '_temp');
 
 end.

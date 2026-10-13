@@ -42,9 +42,21 @@ system/
 ## Como compilar e usar
 
 1. Abra `system\ClipDownloader.dproj` no Delphi/RAD Studio e compile.
-2. Garanta que `yt-dlp.exe` e `ffmpeg.exe` estejam no diretório configurado em `uDownloader.pas` (constante `YTDLP_DIR`).
-3. Ajuste a pasta de destino na constante `DEST_DIR` (ex: `M:\Clips`).
-4. Execute, abra um vídeo e clique em **Baixar**.
+2. Garanta que `yt-dlp.exe` e `ffmpeg.exe` estejam **na pasta do executável, na pasta pai (`..\`) ou em `bin\`**.
+3. Execute, abra um vídeo e clique em **Baixar**.
+
+### Caminhos (portáveis)
+
+O aplicativo não usa caminhos absolutos de máquina. Ao iniciar, ele resolve:
+
+- **yt-dlp/ffmpeg:** procura `yt-dlp.exe` na pasta do executável, depois em `..\` e em `bin\`.
+- **Pasta de destino:** usa a variável de ambiente `CLIPDOWNLOADER_DEST` se definida; caso contrário, `<usuário>\Downloads\Clips`.
+
+Para mudar a pasta de destino sem recompilar, defina antes de abrir o app:
+
+```powershell
+setx CLIPDOWNLOADER_DEST "D:\Music\Clips"
+```
 
 ## Aviso
 
